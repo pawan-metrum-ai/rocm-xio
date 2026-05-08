@@ -1,5 +1,5 @@
-rocm-xio (0.1.0~git2d9d85a) noble; urgency=low
+rocm-xio (0.1.0~gitb7f09f7) noble; urgency=low
 
-  * ci: rolling packages use rocm-xio-latest and shared release notes
+  * Improve Doxygen coverage for public API and owned headers
 
- -- AMD ROCm Build <rocm-xio@amd.com>  Fri, 08 May 2026 14:25:12 -0400
+ -- AMD ROCm Build <rocm-xio@amd.com>  Fri, 08 May 2026 19:03:00 -0400
