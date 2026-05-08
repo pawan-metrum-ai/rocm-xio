@@ -271,6 +271,7 @@ __device__ static void driveEndpointSingle(
   constexpr unsigned kMaxTimedBatch = 256;
   unsigned long long int batchStartTimes[kMaxTimedBatch];
   const bool useBatchTiming = (config.timingStats != nullptr);
+  bool skippedFirstTiming = false;
   if (useBatchTiming && batch_size > kMaxTimedBatch) {
     batch_size = kMaxTimedBatch;
   }
@@ -507,7 +508,11 @@ __device__ static void driveEndpointSingle(
       } else if (useBatchTiming && b < kMaxTimedBatch) {
         unsigned long long int endTime = wall_clock64();
         if (endTime > batchStartTimes[b]) {
-          updateTimingStats(config.timingStats, endTime - batchStartTimes[b]);
+          if (config.skipFirstIoTiming && !skippedFirstTiming) {
+            skippedFirstTiming = true;
+          } else {
+            updateTimingStats(config.timingStats, endTime - batchStartTimes[b]);
+          }
         }
       }
 
@@ -590,6 +595,7 @@ __device__ static void driveEndpointWavefront(
   __shared__ unsigned sh_batch_count;
   __shared__ bool sh_stop;
   __shared__ bool sh_error;
+  __shared__ bool sh_skipped_first_timing;
   extern __shared__ unsigned long long int sh_startTimes[];
 
   if (tid == 0) {
@@ -599,6 +605,7 @@ __device__ static void driveEndpointWavefront(
     sh_ops_done = 0;
     sh_stop = false;
     sh_error = false;
+    sh_skipped_first_timing = false;
 
     if (has_write_buffer) {
       xio::DataPatternParams pp{
@@ -782,7 +789,11 @@ __device__ static void driveEndpointWavefront(
         } else if (useBatchTiming) {
           unsigned long long int endTime = wall_clock64();
           if (endTime > sh_startTimes[b]) {
-            updateTimingStats(config.timingStats, endTime - sh_startTimes[b]);
+            if (config.skipFirstIoTiming && !sh_skipped_first_timing) {
+              sh_skipped_first_timing = true;
+            } else {
+              updateTimingStats(config.timingStats, endTime - sh_startTimes[b]);
+            }
           }
         }
 

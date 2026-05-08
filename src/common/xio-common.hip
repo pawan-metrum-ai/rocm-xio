@@ -180,7 +180,7 @@ void printStatistics(const std::vector<double>& durations,
                      unsigned totalIterations, unsigned numThreads,
                      unsigned readIterations, unsigned writeIterations,
                      unsigned verifiedReadsCount, unsigned verifyPass,
-                     unsigned verifyFail) {
+                     unsigned verifyFail, bool firstIoIgnored) {
   if (durations.empty()) {
     return;
   }
@@ -228,7 +228,10 @@ void printStatistics(const std::vector<double>& durations,
     time_unit = " ns";
   }
 
-  std::cout << "\nStatistics:" << std::endl;
+  if (firstIoIgnored)
+    std::cout << "\nStatistics (first I/O ignored):" << std::endl;
+  else
+    std::cout << "\nStatistics:" << std::endl;
 
   // Print iterations - endpoint-specific (at the top)
   if (readIterations > 0 || writeIterations > 0) {
@@ -274,7 +277,8 @@ void printStatistics(const std::vector<double>& durations,
 void printHistogram(const std::vector<double>& durations, unsigned nIterations,
                     unsigned numThreads, unsigned readIterations,
                     unsigned writeIterations, unsigned verifiedReadsCount,
-                    unsigned verifyPass, unsigned verifyFail) {
+                    unsigned verifyPass, unsigned verifyFail,
+                    bool firstIoIgnored) {
   if (durations.empty() || nIterations == 0) {
     return;
   }
@@ -382,7 +386,8 @@ void printHistogram(const std::vector<double>& durations, unsigned nIterations,
 
   // Print statistics after histogram
   printStatistics(durations, nIterations, numThreads, readIterations,
-                  writeIterations, verifiedReadsCount, verifyPass, verifyFail);
+                  writeIterations, verifiedReadsCount, verifyPass, verifyFail,
+                  firstIoIgnored);
 }
 
 static hsa_status_t allocDeviceMemoryHsa(size_t size, void** ptr,

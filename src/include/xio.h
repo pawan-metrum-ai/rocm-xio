@@ -195,12 +195,13 @@ __host__ hipError_t syncHipKernel(const char* endpoint, const char* kernel,
  * @param verifiedReadsCount Verified reads (0 to omit).
  * @param verifyPass Verified iterations passed (0 to omit).
  * @param verifyFail Verified iterations failed (0 to omit).
+ * @param firstIoIgnored true when the first I/O was omitted from stats.
  */
 void printStatistics(const std::vector<double>& durations,
                      unsigned totalIterations = 0, unsigned numThreads = 0,
                      unsigned readIterations = 0, unsigned writeIterations = 0,
                      unsigned verifiedReadsCount = 0, unsigned verifyPass = 0,
-                     unsigned verifyFail = 0);
+                     unsigned verifyFail = 0, bool firstIoIgnored = false);
 
 /**
  * @brief Print a histogram and statistics from durations.
@@ -212,12 +213,13 @@ void printStatistics(const std::vector<double>& durations,
  * @param verifiedReadsCount Verified reads (0 to omit).
  * @param verifyPass Verified iterations passed (0 to omit).
  * @param verifyFail Verified iterations failed (0 to omit).
+ * @param firstIoIgnored true when the first I/O was omitted from stats.
  */
 void printHistogram(const std::vector<double>& durations, unsigned nIterations,
                     unsigned numThreads = 0, unsigned readIterations = 0,
                     unsigned writeIterations = 0,
                     unsigned verifiedReadsCount = 0, unsigned verifyPass = 0,
-                    unsigned verifyFail = 0);
+                    unsigned verifyFail = 0, bool firstIoIgnored = false);
 
 /**
  * @brief Allocate queue memory (device or host).

@@ -15,6 +15,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -105,6 +106,12 @@ int main(int argc, char** argv) {
     .add_flag("--less-timing", lessTiming,
               "Use lightweight timing mode (track min/max/mean only, "
               "useful for large iterations)")
+    ->group("Common Options");
+  app
+    .add_flag("--skip-first-io-timing,!--no-skip-first-io-timing",
+              commonConfig.skipFirstIoTiming,
+              "Exclude the first I/O latency from reported timing stats "
+              "(default: on)")
     ->group("Common Options");
 
   bool substepTiming = false;
@@ -551,12 +558,33 @@ int main(int argc, char** argv) {
 
   // Print raw timing data if verbose and full timing is enabled
   if (baseConfig.verbose && !lessTiming) {
+    constexpr int durationWidth = 24;
+    const char oldFill = std::cout.fill();
+    auto printDurationColumn = [&](double durationNs, bool ignored) {
+      std::ostringstream durationText;
+      durationText << std::fixed << std::setprecision(3) << durationNs
+                   << " ns";
+      if (ignored) {
+        durationText << " (ignored)";
+      }
+      std::cout << std::setfill(' ') << std::left
+                << std::setw(durationWidth) << durationText.str()
+                << std::right << std::setfill(oldFill) << " |" << std::endl;
+    };
+    auto printInvalidDuration = [&]() {
+      std::cout << std::setfill(' ') << std::left
+                << std::setw(durationWidth) << "INVALID" << std::right
+                << std::setfill(oldFill) << " |" << std::endl;
+    };
+
     if (baseConfig.numThreads == 1) {
       std::cout << "\nRaw timing data:" << std::endl;
-      std::cout << "Index | Start Time      | End Time        | Duration"
-                << std::endl;
-      std::cout << "------|-----------------|-----------------|----------"
-                << std::endl;
+      std::cout << "Index | Start Time      | End Time        | "
+                << std::setfill(' ') << std::left
+                << std::setw(durationWidth) << "Duration" << std::right
+                << std::setfill(oldFill) << " |" << std::endl;
+      std::cout << "------|-----------------|-----------------|"
+                << std::string(durationWidth + 2, '-') << "|" << std::endl;
       for (unsigned i = 0; i < baseConfig.iterations; ++i) {
         std::cout << std::setw(5) << i << " | " << std::setw(15)
                   << hostStartTime[i] << " | " << std::setw(15)
@@ -564,19 +592,21 @@ int main(int argc, char** argv) {
         if (hostEndTime[i] > hostStartTime[i]) {
           double durationNs = (hostEndTime[i] - hostStartTime[i]) *
                               gpuClockPeriodNs;
-          std::cout << std::fixed << std::setprecision(3) << durationNs << " ns"
-                    << std::endl;
+          printDurationColumn(durationNs, baseConfig.skipFirstIoTiming &&
+                                            i == 0);
         } else {
-          std::cout << "INVALID" << std::endl;
+          printInvalidDuration();
         }
       }
       std::cout << std::endl;
     } else {
       std::cout << "\nRaw timing data (multi-threaded):" << std::endl;
       std::cout << "Thread | Index | Start Time      | End Time        | "
-                << "Duration" << std::endl;
+                << std::setfill(' ') << std::left
+                << std::setw(durationWidth) << "Duration" << std::right
+                << std::setfill(oldFill) << " |" << std::endl;
       std::cout << "-------|-------|-----------------|-----------------|"
-                << "----------" << std::endl;
+                << std::string(durationWidth + 2, '-') << "|" << std::endl;
       for (unsigned t = 0; t < baseConfig.numThreads; ++t) {
         for (unsigned i = 0; i < baseConfig.iterations; ++i) {
           unsigned idx = t * baseConfig.iterations + i;
@@ -586,10 +616,10 @@ int main(int argc, char** argv) {
           if (hostEndTime[idx] > hostStartTime[idx]) {
             double durationNs = (hostEndTime[idx] - hostStartTime[idx]) *
                                 gpuClockPeriodNs;
-            std::cout << std::fixed << std::setprecision(3) << durationNs
-                      << " ns" << std::endl;
+            printDurationColumn(durationNs, baseConfig.skipFirstIoTiming &&
+                                              i == 0);
           } else {
-            std::cout << "INVALID" << std::endl;
+            printInvalidDuration();
           }
         }
       }
@@ -636,11 +666,12 @@ int main(int argc, char** argv) {
       unsigned actualIterations = static_cast<unsigned>(timingStats->count);
       if (showHistogram) {
         printHistogram(durations, actualIterations, baseConfig.numThreads, 0, 0,
-                       UINT_MAX, baseConfig.verifyPass, baseConfig.verifyFail);
+                       UINT_MAX, baseConfig.verifyPass, baseConfig.verifyFail,
+                       baseConfig.skipFirstIoTiming);
       } else {
         printStatistics(durations, actualIterations, baseConfig.numThreads, 0,
                         0, UINT_MAX, baseConfig.verifyPass,
-                        baseConfig.verifyFail);
+                        baseConfig.verifyFail, baseConfig.skipFirstIoTiming);
       }
     } else {
       std::cout << "Warning: No timing data collected in less-timing mode"
@@ -663,8 +694,8 @@ int main(int argc, char** argv) {
         unsigned idx = baseIdx + i;
         if (hostEndTime[idx] > hostStartTime[idx]) {
           actualIterations++; // Count all completed iterations
-          if (i > 0) {
-            // Skip first iteration per thread for statistics
+          if (!baseConfig.skipFirstIoTiming || i > 0) {
+            // Optionally skip first iteration per thread for statistics.
             double durationNs = (hostEndTime[idx] - hostStartTime[idx]) *
                                 gpuClockPeriodNs;
             durations.push_back(durationNs);
@@ -682,11 +713,12 @@ int main(int argc, char** argv) {
     if (durations.size() > 0) {
       if (showHistogram) {
         printHistogram(durations, actualIterations, baseConfig.numThreads, 0, 0,
-                       UINT_MAX, baseConfig.verifyPass, baseConfig.verifyFail);
+                       UINT_MAX, baseConfig.verifyPass, baseConfig.verifyFail,
+                       baseConfig.skipFirstIoTiming);
       } else {
         printStatistics(durations, actualIterations, baseConfig.numThreads, 0,
                         0, UINT_MAX, baseConfig.verifyPass,
-                        baseConfig.verifyFail);
+                        baseConfig.verifyFail, baseConfig.skipFirstIoTiming);
       }
     } else {
       std::cout << "Warning: No valid timing data collected" << std::endl;

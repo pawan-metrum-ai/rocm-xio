@@ -85,6 +85,7 @@ struct XioEndpointConfig {
   unsigned memoryMode = 0;    /**< XIO_MEM_MODE_* queue and data flags. */
   bool verbose = false;       /**< Enable endpoint-specific verbose logs. */
   bool pciMmioBridge = false; /**< Route MMIO doorbells through bridge. */
+  bool skipFirstIoTiming = true; /**< Omit first I/O latency from stats. */
 
   unsigned long long int* startTimes = nullptr; /**< Per-op start times. */
   unsigned long long int* endTimes = nullptr;   /**< Per-op end times. */
