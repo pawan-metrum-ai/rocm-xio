@@ -898,18 +898,28 @@ __host__ std::string validateConfig(nvmeEpConfig* config) {
     config->controller = nvme_path.controllerPath;
   }
 
+  // Query the controller queue count before accepting an explicit queue ID.
+  // Linux exposes queue_count as admin queue + I/O queues, so the last valid
+  // I/O queue ID is queue_count - 1.
+  uint16_t max_queue_id = 0;
+  int queue_ret = queryMaxQueueId(config->controller.c_str(), &max_queue_id);
+  if (queue_ret != 0) {
+    return "Failed to detect maximum queue ID. "
+           "Please specify --queue-id manually.";
+  }
+
   // Auto-detect maximum queue ID if queueId is 0 (default)
   if (config->queueId == 0) {
-    uint16_t max_queue_id = 0;
-    int ret = queryMaxQueueId(config->controller.c_str(), &max_queue_id);
-    if (ret != 0) {
-      return "Failed to detect maximum queue ID. "
-             "Please specify --queue-id manually.";
-    }
     config->queueId = max_queue_id;
     ROCXIO_LOG_INFO("Auto-detected last available queue "
                     "ID: %u\n",
                     config->queueId);
+  } else if (config->queueId > max_queue_id) {
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "--queue-id %u exceeds last available I/O queue ID %u",
+             config->queueId, max_queue_id);
+    return std::string(buf);
   }
 
   // Multi-queue validation: ensure enough I/O queues
@@ -1500,9 +1510,14 @@ __host__ hipError_t run(XioEndpointConfig* config) {
       }
 
       void* gpu_pool = nullptr;
-      (void)hipHostGetDevicePointer(&gpu_pool, pool, 0);
-      if (!gpu_pool) {
-        gpu_pool = pool;
+      hipError_t gpu_ptr_err = hipHostGetDevicePointer(&gpu_pool, pool, 0);
+      if (gpu_ptr_err != hipSuccess || !gpu_pool) {
+        ROCXIO_LOG_ERROR("Failed to get PRP list pool GPU pointer "
+                         "for queue %u: %s\n",
+                         qid, hipGetErrorString(gpu_ptr_err));
+        (void)hipHostFree(pool);
+        result = gpu_ptr_err != hipSuccess ? gpu_ptr_err : hipErrorInvalidValue;
+        goto cleanup;
       }
 
       prpPools[q].ptr = pool;
@@ -1574,6 +1589,67 @@ __host__ hipError_t run(XioEndpointConfig* config) {
       kernelConfig.timingStats = perQueueStats[q];
     }
 
+    auto failMissingKernelArg = [&](const char* arg_name) -> bool {
+      ROCXIO_LOG_ERROR("Missing required NVMe kernel argument "
+                       "'%s' for queue %u\n",
+                       arg_name, qid);
+      result = hipErrorInvalidValue;
+      return true;
+    };
+
+    auto failZeroKernelArg = [&](const char* arg_name) -> bool {
+      ROCXIO_LOG_ERROR("Required NVMe kernel argument '%s' "
+                       "is zero for queue %u\n",
+                       arg_name, qid);
+      result = hipErrorInvalidValue;
+      return true;
+    };
+
+    if (!kernelConfig.submissionQueue &&
+        failMissingKernelArg("submissionQueue"))
+      goto cleanup;
+    if (!kernelConfig.completionQueue &&
+        failMissingKernelArg("completionQueue"))
+      goto cleanup;
+    if (!kernelConfig.stopRequested && failMissingKernelArg("stopRequested"))
+      goto cleanup;
+    if (useLessTiming && !kernelConfig.timingStats &&
+        failMissingKernelArg("timingStats"))
+      goto cleanup;
+    if (!useLessTiming &&
+        (!kernelConfig.startTimes || !kernelConfig.endTimes) &&
+        failMissingKernelArg("startTimes/endTimes"))
+      goto cleanup;
+    if (nvmeConfig->ioParams.readIo != 0) {
+      if (!qBufParams.readBuffer && failMissingKernelArg("readBuffer"))
+        goto cleanup;
+      if (qBufParams.readBufferDma == 0 &&
+          failZeroKernelArg("readBufferDma"))
+        goto cleanup;
+    }
+    if (nvmeConfig->ioParams.writeIo != 0) {
+      if (!qBufParams.writeBuffer && failMissingKernelArg("writeBuffer"))
+        goto cleanup;
+      if (qBufParams.writeBufferDma == 0 &&
+          failZeroKernelArg("writeBufferDma"))
+        goto cleanup;
+    }
+    if (prpStridePerCmd > 0) {
+      if (!qBufParams.prpListPool && failMissingKernelArg("prpListPool"))
+        goto cleanup;
+      if (qBufParams.prpListPoolDma == 0 &&
+          failZeroKernelArg("prpListPoolDma"))
+        goto cleanup;
+    }
+    if (qDoorbellParams.usePciMmioBridge) {
+      if (!qDoorbellParams.shadowBufferVirt &&
+          failMissingKernelArg("shadowBufferVirt"))
+        goto cleanup;
+    } else if (!qDoorbellParams.nvmeBar0Gpu &&
+               failMissingKernelArg("nvmeBar0Gpu")) {
+      goto cleanup;
+    }
+
     // Keep backward compat: update nvmeConfig
     // with the first queue's info for single-queue
     if (q == 0) {
@@ -1590,20 +1666,35 @@ __host__ hipError_t run(XioEndpointConfig* config) {
                     "(stream %p)\n",
                     qid, (void*)streams[q]);
 
+    (void)xio::clearHipLaunchError("nvme-ep", "gpuKernel", qid);
+
     hipLaunchKernelGGL(nvme_ep::gpuKernel, dim3(1), dim3(kernelThreads),
                        dynShmemBytes, streams[q], kernelConfig, ioParams,
                        qDoorbellParams, qBufParams);
+
+    hipError_t launchErr = xio::checkHipLaunchError(
+      "nvme-ep", "gpuKernel", qid, 1, kernelThreads, dynShmemBytes,
+      streams[q]);
+    if (launchErr != hipSuccess) {
+      result = launchErr;
+      goto cleanup;
+    }
   }
 
   ROCXIO_LOG_INFO("%u kernel%s launched.\n", numQueues,
                   numQueues > 1 ? "s" : "");
 
-  // Wait for all GPU kernels to complete
-  result = hipDeviceSynchronize();
-  if (result != hipSuccess) {
-    ROCXIO_LOG_INFO("Device synchronization error: "
-                    "%s (code: %d).\n",
-                    hipGetErrorString(result), result);
+  // Wait for all GPU kernels to complete.  Stream-specific sync gives a
+  // precise queue id in multi-queue mode while preserving default-stream
+  // behavior for the single-queue path.
+  for (uint16_t q = 0; q < numQueues; q++) {
+    uint16_t qid = q < nvmeConfig->queueIds.size()
+                     ? nvmeConfig->queueIds[q]
+                     : (uint16_t)(baseQueueId + q);
+    result = xio::syncHipKernel("nvme-ep", "gpuKernel", qid, streams[q]);
+    if (result != hipSuccess) {
+      goto cleanup;
+    }
   }
 
   // ---- Verify read buffers ----
