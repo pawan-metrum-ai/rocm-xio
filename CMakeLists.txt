@@ -377,6 +377,17 @@ target_compile_options(rocm-xio PRIVATE
 # HIP-specific compilation flags (relocatable device code)
 target_compile_options(rocm-xio PRIVATE -fgpu-rdc)
 
+# ROCm clang adds the ROCm include directory after system include paths for HIP
+# compilation. Force the ROCm HSA extension header so stale distro HSA headers
+# in /usr/include do not shadow newer ROCm APIs.
+set(ROCM_HSA_EXT_AMD_HEADER "${ROCM_PATH}/include/hsa/hsa_ext_amd.h")
+if(NOT EXISTS "${ROCM_HSA_EXT_AMD_HEADER}")
+  message(FATAL_ERROR
+    "ROCm HSA extension header not found: ${ROCM_HSA_EXT_AMD_HEADER}")
+endif()
+target_compile_options(rocm-xio PRIVATE
+  $<$<COMPILE_LANGUAGE:HIP>:SHELL:-include ${ROCM_HSA_EXT_AMD_HEADER}>)
+
 # Shared library needs -fgpu-rdc at link time too so
 # the device linker resolves cross-TU device calls and
 # embeds the final HSACO blobs in .hip_fatbin sections.
